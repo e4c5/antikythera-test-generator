@@ -24,3 +24,6 @@ controllers: sa.com.cloudsolutions.controller
 
 # Path to output the generated test project
 output_path: /tmp/antikythera
+
+plain_mock_dependency_simple_names:
+  - ProblemFeignClient

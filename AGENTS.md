@@ -89,7 +89,7 @@ parser/
 ### Generation Pipeline (Unit Tests)
 
 ```
-ServicesParser.evaluateMethod(md)
+ServicesParser.evaluateMethod(md, argumentGenerator)
   ├─ Factory.create("unit", cu)          → UnitTestGenerator (cached per class)
   ├─ EvaluatorFactory.create(fqn)        → SpringEvaluator (from antikythera core)
   ├─ evaluator.addGenerator(gen)
@@ -178,6 +178,9 @@ Both must be cloned at the same folder level as this project.
 VM arguments required (already set in `pom.xml` via `argLine`):
 ```
 -javaagent:${antikythera.agent.path}
+-XX:+EnableDynamicAgentLoading
+--add-opens java.base/java.nio.charset=ALL-UNNAMED
+--add-opens java.base/java.lang=ALL-UNNAMED
 --add-opens java.base/java.util.stream=ALL-UNNAMED
 ```
 

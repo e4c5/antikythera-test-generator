@@ -40,11 +40,11 @@ controllers:
 
 ## Test Class Customisation
 
-| Property | Description |
-| :--- | :--- |
-| `base_test_class` | Fully qualified name of a class that every generated test class should extend. The class must already exist under `src/test/java`. Antikythera parses it to discover shared mocks and to execute its `setUpBase()` method. See the [Base Test Class](../README.md#base-test-class) section of the README for full details. |
-| `extra_imports` | List of additional fully qualified type names added as imports to every generated test class. |
-| `test_privates` | `false` — When `true`, private methods are included in test generation alongside package-visible and public methods. |
+| Property | Default | Description |
+| :--- | :--- | :--- |
+| `base_test_class` | `TestHelper` (API), none (unit) | Fully qualified name of a class that every generated test class should extend. Applies to **both** unit tests (via `services`) and API tests (via `controllers`). For unit tests the class must already exist under `src/test/java`; Antikythera parses it to discover shared mocks and to execute its `setUpBase()` method. For API tests, if this setting is absent, the generated class extends the built-in `TestHelper`. See the [Base Test Class](../README.md#base-test-class) section of the README for full details. |
+| `extra_imports` | — | List of additional fully qualified type names added as imports to every generated test class. |
+| `test_privates` | `false` | When `true`, private methods are included in test generation alongside package-visible and public methods. |
 
 Example:
 
@@ -67,6 +67,52 @@ test_privates: false
 | `skip_void_no_side_effects` | `true` | When `true`, no test is emitted for a `void` execution path that produces no detectable side effect. Set to `false` to force a test for every path. Side effects include: `System.out` / `System.err` output, SLF4J log statements, Mockito `when/then` interactions, reachable branching conditions, and thrown exceptions. |
 | `generate_constructor_tests` | `false` | When `true`, tests are generated for constructors as well as methods. Useful when constructors perform initialisation with observable side effects (e.g. logging, field validation). |
 | `log_appender` | — | Fully qualified name of the `LogAppender` class used to capture and assert on SLF4J log output. Required to enable log-based assertions for void methods; if absent, log assertions are skipped even when log output is observed. See the [Testing Void Methods via Side Effects](../README.md#testing-void-methods-via-side-effects) section of the README for setup instructions. |
+
+---
+
+## Generation Modes and `output_path` Semantics
+
+Antikythera operates in two distinct modes depending on which list is populated in `generator.yml`.
+The meaning of `output_path` differs between them.
+
+### Unit Test Mode (`services` only)
+
+Generated tests are written **directly into the existing project** alongside its main sources.
+`output_path` must point to the project's existing `src/test/java` directory:
+
+```yaml
+services:
+  - com.example.service.OrderService
+
+output_path: /path/to/project/src/test/java
+```
+
+No Maven project structure, no `pom.xml`, and no `TestHelper.java` are generated.
+The tests compile and run as part of the existing project's test suite.
+
+### API Test Mode (`controllers`)
+
+Generated tests are written into a **standalone Maven project**.
+`output_path` is still the `src/test/java` directory, but Antikythera automatically derives the
+project root by stripping the trailing `src/test/java` components, and places `pom.xml` and the
+full Maven directory structure there:
+
+```yaml
+controllers:
+  - com.example.controller.OrderController
+
+output_path: /path/to/standalone-tests/src/test/java
+# → project root derived as: /path/to/standalone-tests/
+# → pom.xml written to:      /path/to/standalone-tests/pom.xml
+```
+
+`TestHelper.java` (or the class named by `base_test_class`) and `Configurations.java` are also
+copied into the standalone project's source tree.
+
+### Mixed Mode (`controllers` + `services`)
+
+Both modes are active simultaneously.  `output_path` serves the API test standalone project.
+Unit tests are written to the path derived from `base_path` (replacing `src/main` with `src/test`).
 
 ---
 

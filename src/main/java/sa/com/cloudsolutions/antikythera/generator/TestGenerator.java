@@ -94,7 +94,12 @@ public abstract class TestGenerator implements ITestGenerator {
         }
 
         if (testMethodNames.contains(testName)) {
-            testName += "_" + (char)('A' + testMethodNames.size()  % 26 );
+            String base = testName;
+            int counter = testMethodNames.size();
+            do {
+                testName = base + "_" + (char) ('A' + counter % 26);
+                counter++;
+            } while (testMethodNames.contains(testName));
         }
         testMethodNames.add(testName);
         return testName;
@@ -116,8 +121,9 @@ public abstract class TestGenerator implements ITestGenerator {
 
         md.findAncestor(TypeDeclaration.class).ifPresent(c ->
         {
-            String comment = String.format("Method under test: %s.%s()%nArgument generator : %s%nAuthor : Antikythera%n",
-                    c.getNameAsString(), md.getNameAsString(), argumentGenerator.getClass().getSimpleName());
+            String comment = String.format("Method under test: %s.%s()%nArgument generator : %s%n%s%n",
+                    c.getNameAsString(), md.getNameAsString(), argumentGenerator.getClass().getSimpleName(),
+                    TestGenerationConstants.GENERATED_COMMENT_AUTHOR_SPACED);
             tm.setJavadocComment(comment);
         });
 

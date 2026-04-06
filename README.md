@@ -88,7 +88,7 @@ antikythera-test-generator/
 - Java 21
 - Maven
 - The `antikythera` core library installed locally (`mvn install` in `../antikythera/`)
-- VM argument: `--add-opens java.base/java.util.stream=ALL-UNNAMED`
+- VM arguments: `-XX:+EnableDynamicAgentLoading`, `--add-opens java.base/java.nio.charset=ALL-UNNAMED`, `--add-opens java.base/java.lang=ALL-UNNAMED`, `--add-opens java.base/java.util.stream=ALL-UNNAMED`
 
 ### Build
 
@@ -123,13 +123,18 @@ mvn exec:java -Dexec.mainClass="sa.com.cloudsolutions.antikythera.generator.Anti
 ```yaml
 base_package: com.example                 # Base package of the project under test
 base_path: /path/to/project/src/main/java
+
+# output_path points to the src/test/java directory.
+# For unit tests (services only): this is the existing project's src/test/java.
+# For API tests (controllers): this is the src/test/java of a standalone generated
+#   project; Antikythera derives the project root and places pom.xml one level up.
 output_path: /path/to/project/src/test/java
 
 # Which classes to process
 controllers:
-  - com.example.controller.UserController
+  - com.example.controller.UserController   # triggers API / RESTAssured test generation
 services:
-  - com.example.service.UserService
+  - com.example.service.UserService         # triggers unit / Mockito test generation
 
 # Test framework
 test_framework: junit                     # junit | testng
@@ -146,7 +151,9 @@ log_appender: com.example.test.LogAppender
 # Optional: generate tests for constructors (default: false)
 generate_constructor_tests: false
 
-# Optional: base class every generated test extends
+# Optional: base class every generated test extends.
+# Applies to both unit tests and API tests.
+# API tests default to the built-in TestHelper when this is not set.
 base_test_class: com.example.BaseTest
 
 # Optional: extra imports added to every generated test class
@@ -162,10 +169,15 @@ that also apply here.
 
 ## Base Test Class
 
-When `base_test_class` is set, every generated test class will extend that class.  The parent class
-is **not generated** — it must already exist in your project's `src/test/java` tree.  Antikythera
-reads and analyses it at generation time so that it can integrate with whatever setup the parent
-class performs.
+When `base_test_class` is set, every generated test class — both unit tests (from `services`) and
+API tests (from `controllers`) — will extend that class.
+
+For **unit tests**, the parent class must already exist in your project's `src/test/java` tree.
+Antikythera reads and analyses it at generation time so that it can integrate with whatever setup
+the parent class performs.
+
+For **API tests**, if `base_test_class` is not set the generated class falls back to extending the
+built-in `TestHelper` class that is copied into the standalone test project.
 
 ### Why Use It
 

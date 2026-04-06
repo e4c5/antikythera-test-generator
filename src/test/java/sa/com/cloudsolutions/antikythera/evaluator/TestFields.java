@@ -128,7 +128,7 @@ class TestFields extends TestHelper {
         assertTrue(s.contains("assertEquals(\"Great Western\", resp.getOrigin())"));
         assertTrue(s.contains("assertEquals(100, resp.getQuantity())"));
         assertTrue(s.contains("assertEquals(true, resp.isOrganic())"));
-        assertTrue(s.contains("assertEquals(true, resp.isBop())"));
+        assertTrue(s.contains("assertEquals(true, resp.getIsBop())"));
         assertTrue(s.contains("assertEquals(true, resp.getCeylon())"));
 
     }

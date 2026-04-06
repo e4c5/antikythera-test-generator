@@ -1,0 +1,23 @@
+# Minimal configuration with no controllers or services specified
+# Used to test fallback mode behavior when both lists are empty
+
+variables:
+  projects_folder: ..
+  m2_folder: ${HOME}/.m2/repository
+
+base_path: ${projects_folder}/antikythera-sample-project/src/main/java
+base_package: sa.com.cloudsolutions
+
+# Empty controllers and services lists to trigger fallback mode
+controllers:
+services:
+
+output_path: /tmp/antikythera
+
+dependencies:
+  on_error: log
+
+database:
+  run_queries: false
+
+log_level: DEBUG

@@ -43,3 +43,8 @@ database:
 
 log_level: DEBUG
 
+# Types that must stay plain @Mock (no RETURNS_DEEP_STUBS) even when the name ends with "Client".
+# Keeps Feign-style failure-path behavior for generated tests without hard-coding project types.
+plain_mock_dependency_simple_names:
+  - ProblemFeignClient
+

@@ -12,6 +12,8 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <antikythera.agent.path>${settings.localRepository}/com/github/Cloud-Solutions-International/antikythera-agent/1.0.0.2/antikythera-agent-1.0.0.2.jar</antikythera.agent.path>
+        <!-- Optional argument to Antikythera main: path to generator.yml (leave empty for classpath default) -->
+        <exec.args></exec.args>
     </properties>
 
     <repositories>
@@ -80,6 +82,8 @@
                 <version>3.2.0</version>
                 <configuration>
                     <mainClass>sa.com.cloudsolutions.antikythera.generator.Antikythera</mainClass>
+                    <!-- Pass path to generator.yml: mvn exec:java -Dexec.args="/path/to/generator.yml" -->
+                    <commandlineArgs>${exec.args}</commandlineArgs>
                 </configuration>
             </plugin>
         </plugins>

@@ -64,7 +64,7 @@ class JunitAsserterTest {
     @Test
     void assertThrowsGeneratesCorrectExpression() {
         MethodResponse response = new MethodResponse();
-        response.setException(new EvaluatorException("Ouch", new IllegalArgumentException()));
+        response.setException(new EvaluatorException("Ouch", new IllegalArgumentException("evaluator-only")));
 
         Expression expr = asserter.assertThrows("someMethod()", response);
         assertEquals("assertThrows(java.lang.IllegalArgumentException.class, () -> someMethod())",
@@ -79,6 +79,41 @@ class JunitAsserterTest {
         Expression expr = asserter.assertThrows("someMethod()", response);
         assertEquals("assertThrows(sa.com.cloudsolutions.antikythera.exception.AntikytheraException.class, () -> someMethod())",
                 expr.toString());
+    }
+
+    /**
+     * Gson-related failures are mapped to assertDoesNotThrow so generated tests stay stable when
+     * mocks change whether Gson throws vs. the method completing.
+     */
+    @Test
+    void assertThrowsUsesAssertDoesNotThrowWhenExceptionLooksLikeGsonIo() {
+        MethodResponse response = new MethodResponse();
+        response.setException(new EvaluatorException("wrap", new JsonIOException()));
+
+        Expression expr = asserter.assertThrows("someMethod();", response);
+        assertEquals("assertDoesNotThrow(() -> someMethod())", expr.toString());
+    }
+
+    @Test
+    void assertThrowsMapsNumericComparatorCannotCompareWithNullToNpe() {
+        MethodResponse response = new MethodResponse();
+        response.setException(new EvaluatorException("wrap",
+                new IllegalArgumentException("Cannot compare java.time.LocalDateTime and null")));
+
+        Expression expr = asserter.assertThrows("someMethod()", response);
+        assertEquals("assertThrows(java.lang.NullPointerException.class, () -> someMethod())", expr.toString());
+    }
+
+    @Test
+    void assertThrowsMapsBareIaeCauseFromEvaluatorExceptionToNpe() {
+        MethodResponse response = new MethodResponse();
+        response.setException(new EvaluatorException("wrap", new IllegalArgumentException()));
+
+        Expression expr = asserter.assertThrows("someMethod()", response);
+        assertEquals("assertThrows(java.lang.NullPointerException.class, () -> someMethod())", expr.toString());
+    }
+
+    private static final class JsonIOException extends RuntimeException {
     }
 
     @Test

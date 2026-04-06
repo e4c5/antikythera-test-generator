@@ -52,9 +52,11 @@ import java.io.PrintStream;
 import java.lang.reflect.Method;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -113,10 +115,62 @@ class UnitTestGeneratorTest {
         classUnderTest.addAnnotation("Service");
         MethodDeclaration methodUnderTest = classUnderTest.findFirst(MethodDeclaration.class,
                 md -> md.getNameAsString().equals("queries2")).orElseThrow();
+        unitTestGenerator.addBeforeClass();
         unitTestGenerator.createTests(methodUnderTest, new MethodResponse());
         String sources = unitTestGenerator.getCompilationUnit().toString();
         assertTrue(sources.contains("queries2Test"));
-        assertTrue(sources.contains("InjectMocks"));
+        assertTrue(sources.contains("ReflectionTestUtils"));
+    }
+
+    @Test
+    void testInjectComponentStereotypeUsesReflectionWiring() {
+        var saved = new ArrayList<>(classUnderTest.getAnnotations());
+        try {
+            classUnderTest.getAnnotations().clear();
+            classUnderTest.addAnnotation("Component");
+            MethodDeclaration methodUnderTest = classUnderTest.findFirst(MethodDeclaration.class,
+                    md -> md.getNameAsString().equals("queries2")).orElseThrow();
+            unitTestGenerator.addBeforeClass();
+            unitTestGenerator.createTests(methodUnderTest, new MethodResponse());
+            String sources = unitTestGenerator.getCompilationUnit().toString();
+            assertTrue(sources.contains("queries2Test"));
+            assertTrue(sources.contains("ReflectionTestUtils"));
+            assertTrue(UnitTestGenerator.isSpringStereotypeBean(classUnderTest));
+        } finally {
+            classUnderTest.getAnnotations().clear();
+            classUnderTest.getAnnotations().addAll(saved);
+        }
+    }
+
+    @Test
+    void testInjectValueFieldsInSetUp() {
+        FieldDeclaration valueField = StaticJavaParser.parseBodyDeclaration(
+                "@Value(\"${x}\") private Integer valueInjectedInteger;").asFieldDeclaration();
+        classUnderTest.addMember(valueField);
+        try {
+            classUnderTest.addAnnotation("Service");
+            MethodDeclaration methodUnderTest = classUnderTest.findFirst(MethodDeclaration.class,
+                    md -> md.getNameAsString().equals("queries2")).orElseThrow();
+            unitTestGenerator.addBeforeClass();
+            unitTestGenerator.createTests(methodUnderTest, new MethodResponse());
+            String sources = unitTestGenerator.getCompilationUnit().toString();
+            assertTrue(sources.contains("ReflectionTestUtils.setField(personService, \"valueInjectedInteger\", 0)"),
+                    "Expected @Value field to receive a non-null default via ReflectionTestUtils");
+        } finally {
+            valueField.remove();
+        }
+    }
+
+    @Test
+    void testIsSpringStereotypeBean() {
+        CompilationUnit probe = StaticJavaParser.parse("class Probe {}");
+        ClassOrInterfaceDeclaration p = probe.getType(0).asClassOrInterfaceDeclaration();
+        assertFalse(UnitTestGenerator.isSpringStereotypeBean(p));
+        p.addAnnotation("org.springframework.stereotype.Component");
+        assertTrue(UnitTestGenerator.isSpringStereotypeBean(p));
+        p.getAnnotations().clear();
+        p.addAnnotation("org.springframework.web.bind.annotation.RestController");
+        assertTrue(UnitTestGenerator.isSpringStereotypeBean(p));
     }
 
     @Test
@@ -143,6 +197,7 @@ class UnitTestGeneratorTest {
 
     @Test
     void testIdentifyFieldsToBeMockedPreservesBaseClassMocks() {
+        MockingRegistry.reset();
         unitTestGenerator.loadPredefinedBaseClassForTest("sa.com.cloudsolutions.antikythera.evaluator.mock.Hello");
 
         classUnderTest.addAnnotation("Service");
@@ -363,6 +418,386 @@ class UnitTestGeneratorTest {
         assertEquals("0L", ((LongLiteralExpr) resultFalse).getValue(),
                 "false should be coerced to 0L for Long wrapper type");
     }
+
+    @Test
+    void testSkipWhenUsageAddsCastingImportsWithoutBaseTestClass() throws Exception {
+        TestGenerator.getImports().clear();
+        MethodCallExpr expr = StaticJavaParser
+                .parseExpression("Mockito.when(repo.find((List<Integer>) Mockito.any())).thenReturn(List.of())")
+                .asMethodCallExpr();
+        Method method = UnitTestGenerator.class.getDeclaredMethod("skipWhenUsage", MethodCallExpr.class);
+        method.setAccessible(true);
+
+        boolean skipped = (boolean) method.invoke(unitTestGenerator, expr);
+
+        assertFalse(skipped);
+        assertTrue(TestGenerator.getImports().stream()
+                .anyMatch(i -> i.getNameAsString().equals("java.util.List")));
+    }
+
+    @Test
+    void testCreateOptionalValueExpressionKeepsObjectType() throws Exception {
+        Method method = UnitTestGenerator.class.getDeclaredMethod("createOptionalValueExpression", Object.class);
+        method.setAccessible(true);
+
+        Expression expr = (Expression) method.invoke(unitTestGenerator, new Object());
+
+        assertFalse(expr.isStringLiteralExpr());
+        assertEquals("org.mockito.Mockito.mock(java.lang.Object.class)", expr.toString());
+    }
+
+    @Test
+    void testCreateFieldInitializerBuildsNestedObjectForNullPojoField() throws Exception {
+        Method method = UnitTestGenerator.class.getDeclaredMethod(
+                "createFieldInitializer", FieldDeclaration.class, Variable.class);
+        method.setAccessible(true);
+
+        FieldDeclaration field = StaticJavaParser.parseBodyDeclaration("private Person manager;").asFieldDeclaration();
+        Variable variable = new Variable((Object) null);
+        variable.setType(new ClassOrInterfaceType(null, "Person"));
+
+        Expression expr = (Expression) method.invoke(unitTestGenerator, field, variable);
+
+        assertNotNull(expr);
+        assertEquals("new sa.com.cloudsolutions.model.Person()", expr.toString());
+    }
+
+    @Test
+    void testCreateFieldInitializerCoercesGeneratedStringPlaceholder() throws Exception {
+        Method method = UnitTestGenerator.class.getDeclaredMethod(
+                "createFieldInitializer", FieldDeclaration.class, Variable.class);
+        method.setAccessible(true);
+
+        FieldDeclaration field = StaticJavaParser.parseBodyDeclaration("private String createdBy;").asFieldDeclaration();
+        Variable variable = new Variable("Antikythera");
+
+        Expression expr = (Expression) method.invoke(unitTestGenerator, field, variable);
+
+        assertInstanceOf(StringLiteralExpr.class, expr);
+        assertEquals("\"0\"", expr.toString());
+    }
+
+    @Test
+    void testCreateFieldInitializerCoercesIntegerLiteralForLongField() throws Exception {
+        Method method = UnitTestGenerator.class.getDeclaredMethod(
+                "createFieldInitializer", FieldDeclaration.class, Variable.class);
+        method.setAccessible(true);
+
+        FieldDeclaration field = StaticJavaParser.parseBodyDeclaration("private Long clinicGroupId;").asFieldDeclaration();
+        Variable variable = new Variable(0);
+
+        Expression expr = (Expression) method.invoke(unitTestGenerator, field, variable);
+
+        assertInstanceOf(LongLiteralExpr.class, expr);
+        assertEquals("0L", expr.toString());
+    }
+
+    @Test
+    void testCreateFieldInitializerCoercesInitializerLiteralForLongField() throws Exception {
+        Method method = UnitTestGenerator.class.getDeclaredMethod(
+                "createFieldInitializer", FieldDeclaration.class, Variable.class);
+        method.setAccessible(true);
+
+        FieldDeclaration field = StaticJavaParser.parseBodyDeclaration("private Long clinicGroupId;").asFieldDeclaration();
+        Variable variable = new Variable((Object) null);
+        variable.setInitializer(List.of(StaticJavaParser.parseExpression("0")));
+
+        Expression expr = (Expression) method.invoke(unitTestGenerator, field, variable);
+
+        assertInstanceOf(LongLiteralExpr.class, expr);
+        assertEquals("0L", expr.toString());
+    }
+
+    @Test
+    void testDefaultExpressionForSimpleTypeUsesLongLiteralSuffix() throws Exception {
+        Method method = UnitTestGenerator.class.getDeclaredMethod(
+                "defaultExpressionForSimpleType", Type.class);
+        method.setAccessible(true);
+
+        Expression expr = (Expression) method.invoke(unitTestGenerator, new ClassOrInterfaceType(null, "Long"));
+
+        assertInstanceOf(LongLiteralExpr.class, expr);
+        assertEquals("0L", expr.toString());
+    }
+
+    @Test
+    void testNormalizeSetterPreconditionCoercesGeneratedStringPlaceholder() throws Exception {
+        Method method = UnitTestGenerator.class.getDeclaredMethod(
+                "normalizeSetterPrecondition", MethodCallExpr.class);
+        method.setAccessible(true);
+
+        MethodCallExpr expr = StaticJavaParser.parseExpression("patientProblem.setCreatedBy(\"Antikythera\")")
+                .asMethodCallExpr();
+
+        MethodCallExpr normalized = (MethodCallExpr) method.invoke(unitTestGenerator, expr);
+
+        assertEquals("patientProblem.setCreatedBy(\"0\")", normalized.toString());
+    }
+
+    @Test
+    void testSetterNameForFieldKeepsIsPrefixForBoxedBoolean() throws Exception {
+        Method method = JavaBeansConventions.class.getDeclaredMethod("setterNameForField", TypeDeclaration.class, FieldDeclaration.class);
+        method.setAccessible(true);
+
+        TypeDeclaration<?> owner = StaticJavaParser.parseBodyDeclaration("""
+                class Sample {
+                    private Boolean isPreviousProblem;
+                }
+                """).asClassOrInterfaceDeclaration();
+        FieldDeclaration field = owner.getFieldByName("isPreviousProblem").orElseThrow();
+
+        String setterName = (String) method.invoke(null, owner, field);
+
+        assertEquals("setIsPreviousProblem", setterName);
+    }
+
+    @Test
+    void testSetterNameForFieldPrefersDeclaredBooleanStyleSetter() throws Exception {
+        Method method = JavaBeansConventions.class.getDeclaredMethod("setterNameForField", TypeDeclaration.class, FieldDeclaration.class);
+        method.setAccessible(true);
+
+        TypeDeclaration<?> owner = StaticJavaParser.parseBodyDeclaration("""
+                class Sample {
+                    private Boolean isPreviousProblem;
+                    public void setPreviousProblem(Boolean previousProblem) {}
+                }
+                """).asClassOrInterfaceDeclaration();
+        FieldDeclaration field = owner.getFieldByName("isPreviousProblem").orElseThrow();
+
+        String setterName = (String) method.invoke(null, owner, field);
+
+        assertEquals("setPreviousProblem", setterName);
+    }
+
+    @Test
+    void testNormalizeSetterPreconditionCoercesIntegerLiteralToLongParameter() throws Exception {
+        Method method = UnitTestGenerator.class.getDeclaredMethod(
+                "normalizeSetterPrecondition", MethodCallExpr.class);
+        method.setAccessible(true);
+
+        unitTestGenerator.createTests(classUnderTest.getMethodsByName("queries2").getFirst(), new MethodResponse());
+        unitTestGenerator.testMethod.getBody().orElseThrow()
+                .addStatement("sa.com.cloudsolutions.model.Person person = new sa.com.cloudsolutions.model.Person();");
+
+        MethodCallExpr expr = StaticJavaParser.parseExpression("person.setId(0)").asMethodCallExpr();
+
+        MethodCallExpr normalized = (MethodCallExpr) method.invoke(unitTestGenerator, expr);
+
+        assertEquals("person.setId(0L)", normalized.toString());
+    }
+
+    @Test
+    void testNormalizeSetterPreconditionSkipsMissingSetterForScopeType() throws Exception {
+        Method method = UnitTestGenerator.class.getDeclaredMethod(
+                "normalizeSetterPrecondition", MethodCallExpr.class);
+        method.setAccessible(true);
+
+        unitTestGenerator.createTests(classUnderTest.getMethodsByName("queries2").getFirst(), new MethodResponse());
+        unitTestGenerator.testMethod.getBody().orElseThrow()
+                .addStatement("sa.com.cloudsolutions.model.Person patientProblem = new sa.com.cloudsolutions.model.Person();");
+
+        MethodCallExpr expr = StaticJavaParser.parseExpression("patientProblem.setPreviousProblem(false)")
+                .asMethodCallExpr();
+
+        Object normalized = method.invoke(unitTestGenerator, expr);
+
+        assertNull(normalized);
+    }
+
+    @Test
+    void testAssertValueWithNoSideEffectsBoxedLong() throws Exception {
+        java.lang.reflect.Method m = UnitTestGenerator.class.getDeclaredMethod(
+                "toScalarLiteralExpression", sa.com.cloudsolutions.antikythera.evaluator.Variable.class, Object.class);
+        m.setAccessible(true);
+
+        sa.com.cloudsolutions.antikythera.evaluator.Variable v = new sa.com.cloudsolutions.antikythera.evaluator.Variable(42L);
+        Expression lit = (Expression) m.invoke(unitTestGenerator, v, 42L);
+        assertEquals("42", lit.toString());
+    }
+
+    @Test
+    void testAssertValueWithNoSideEffectsBoxedCharacter() throws Exception {
+        java.lang.reflect.Method m = UnitTestGenerator.class.getDeclaredMethod(
+                "toScalarLiteralExpression", sa.com.cloudsolutions.antikythera.evaluator.Variable.class, Object.class);
+        m.setAccessible(true);
+
+        sa.com.cloudsolutions.antikythera.evaluator.Variable v = new sa.com.cloudsolutions.antikythera.evaluator.Variable('z');
+        Expression lit = (Expression) m.invoke(unitTestGenerator, v, 'z');
+        assertEquals("'z'", lit.toString());
+    }
+
+    @Test
+    void testAssertValueWithNoSideEffectsBoxedBoolean() throws Exception {
+        java.lang.reflect.Method m = UnitTestGenerator.class.getDeclaredMethod(
+                "toScalarLiteralExpression", sa.com.cloudsolutions.antikythera.evaluator.Variable.class, Object.class);
+        m.setAccessible(true);
+
+        sa.com.cloudsolutions.antikythera.evaluator.Variable v = new sa.com.cloudsolutions.antikythera.evaluator.Variable(true);
+        Expression lit = (Expression) m.invoke(unitTestGenerator, v, true);
+        assertEquals("true", lit.toString());
+    }
+
+    @Test
+    void testAssertValueWithNoSideEffectsString() throws Exception {
+        java.lang.reflect.Method m = UnitTestGenerator.class.getDeclaredMethod(
+                "toScalarLiteralExpression", sa.com.cloudsolutions.antikythera.evaluator.Variable.class, Object.class);
+        m.setAccessible(true);
+
+        sa.com.cloudsolutions.antikythera.evaluator.Variable v = new sa.com.cloudsolutions.antikythera.evaluator.Variable("hello");
+        Expression lit = (Expression) m.invoke(unitTestGenerator, v, "hello");
+        assertEquals("\"hello\"", lit.toString());
+    }
+
+    @Test
+    void testAssertValueWithNoSideEffectsBoxedShort() throws Exception {
+        java.lang.reflect.Method m = UnitTestGenerator.class.getDeclaredMethod(
+                "toScalarLiteralExpression", sa.com.cloudsolutions.antikythera.evaluator.Variable.class, Object.class);
+        m.setAccessible(true);
+
+        sa.com.cloudsolutions.antikythera.evaluator.Variable v = new sa.com.cloudsolutions.antikythera.evaluator.Variable((short) 7);
+        Expression lit = (Expression) m.invoke(unitTestGenerator, v, (short) 7);
+        assertEquals("(short) 7", lit.toString());
+    }
+
+    @Test
+    void testAssertValueWithNoSideEffectsBoxedByte() throws Exception {
+        java.lang.reflect.Method m = UnitTestGenerator.class.getDeclaredMethod(
+                "toScalarLiteralExpression", sa.com.cloudsolutions.antikythera.evaluator.Variable.class, Object.class);
+        m.setAccessible(true);
+
+        sa.com.cloudsolutions.antikythera.evaluator.Variable v = new sa.com.cloudsolutions.antikythera.evaluator.Variable((byte) 5);
+        Expression lit = (Expression) m.invoke(unitTestGenerator, v, (byte) 5);
+        assertEquals("(byte) 5", lit.toString());
+    }
+
+    @Test
+    void testShouldSuppressNoSuchElementAssertThrowsWithoutOptionalEmptyUsage() throws Exception {
+        MethodDeclaration createMethod = classUnderTest.getMethodsByName("queries2").getFirst();
+        unitTestGenerator.createTests(createMethod, new MethodResponse());
+
+        Method method = UnitTestGenerator.class.getDeclaredMethod(
+                "shouldSuppressNoSuchElementAssertThrows", sa.com.cloudsolutions.antikythera.evaluator.ExceptionContext.class);
+        method.setAccessible(true);
+
+        sa.com.cloudsolutions.antikythera.evaluator.ExceptionContext ctx =
+                new sa.com.cloudsolutions.antikythera.evaluator.ExceptionContext();
+        ctx.setException(new NoSuchElementException());
+
+        boolean suppressed = (boolean) method.invoke(unitTestGenerator, ctx);
+
+        assertTrue(suppressed);
+    }
+
+    @Test
+    void testShouldNotSuppressNoSuchElementAssertThrowsWithOptionalEmptyUsage() throws Exception {
+        MethodDeclaration createMethod = classUnderTest.getMethodsByName("queries2").getFirst();
+        unitTestGenerator.createTests(createMethod, new MethodResponse());
+        unitTestGenerator.testMethod.getBody().orElseThrow().addStatement("java.util.Optional.empty();");
+
+        Method method = UnitTestGenerator.class.getDeclaredMethod(
+                "shouldSuppressNoSuchElementAssertThrows", sa.com.cloudsolutions.antikythera.evaluator.ExceptionContext.class);
+        method.setAccessible(true);
+
+        sa.com.cloudsolutions.antikythera.evaluator.ExceptionContext ctx =
+                new sa.com.cloudsolutions.antikythera.evaluator.ExceptionContext();
+        ctx.setException(new NoSuchElementException());
+
+        boolean suppressed = (boolean) method.invoke(unitTestGenerator, ctx);
+
+        assertFalse(suppressed);
+    }
+
+    @Test
+    void testSeedCollectionArgumentsForExceptionUsesNonEmptyElement() throws Exception {
+        MethodDeclaration method = StaticJavaParser.parseBodyDeclaration("""
+                void createChiefComplains(java.util.List<Person> chiefComplains, String userId) {}
+                """).asMethodDeclaration();
+        Method build = UnitTestGenerator.class.getDeclaredMethod("buildNonEmptyCollectionInitializer", Parameter.class);
+        build.setAccessible(true);
+
+        Expression replacement = (Expression) build.invoke(unitTestGenerator, method.getParameter(0));
+
+        assertNotNull(replacement);
+        assertTrue(replacement.toString().contains("java.util.List.of("));
+    }
+
+    @Test
+    void testShouldSuppressIllegalArgumentAssertThrowsForEvaluatorOnlyPath() throws Exception {
+        MethodDeclaration createMethod = classUnderTest.getMethodsByName("queries2").getFirst();
+        unitTestGenerator.createTests(createMethod, new MethodResponse());
+        unitTestGenerator.testMethod.getBody().orElseThrow().addStatement("Long patientId = 0L;");
+        unitTestGenerator.testMethod.getBody().orElseThrow().addStatement(
+                "Mockito.when(personRepository.findById(Mockito.anyLong())).thenReturn(java.util.Optional.of(new sa.com.cloudsolutions.model.Person()));");
+
+        Method extract = UnitTestGenerator.class.getDeclaredMethod("extractTestArguments");
+        extract.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<String, Expression> currentArgs = (Map<String, Expression>) extract.invoke(unitTestGenerator);
+
+        sa.com.cloudsolutions.antikythera.evaluator.ExceptionContext ctx =
+                new sa.com.cloudsolutions.antikythera.evaluator.ExceptionContext();
+        ctx.setException(new IllegalArgumentException("evaluator-only"));
+
+        Method suppress = UnitTestGenerator.class.getDeclaredMethod(
+                "shouldSuppressIllegalArgumentAssertThrows",
+                sa.com.cloudsolutions.antikythera.evaluator.ExceptionContext.class,
+                Map.class);
+        suppress.setAccessible(true);
+
+        boolean result = (boolean) suppress.invoke(unitTestGenerator, ctx, currentArgs);
+
+        assertTrue(result);
+    }
+
+    @Test
+    void testShouldSuppressIllegalArgumentAssertThrowsWithoutMockStubsWhenInputsAreConcrete() throws Exception {
+        MethodDeclaration createMethod = classUnderTest.getMethodsByName("queries2").getFirst();
+        unitTestGenerator.createTests(createMethod, new MethodResponse());
+        unitTestGenerator.testMethod.getBody().orElseThrow().addStatement("Long patientId = 0L;");
+
+        Method extract = UnitTestGenerator.class.getDeclaredMethod("extractTestArguments");
+        extract.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<String, Expression> currentArgs = (Map<String, Expression>) extract.invoke(unitTestGenerator);
+
+        sa.com.cloudsolutions.antikythera.evaluator.ExceptionContext ctx =
+                new sa.com.cloudsolutions.antikythera.evaluator.ExceptionContext();
+        ctx.setException(new IllegalArgumentException("evaluator-only"));
+
+        Method suppress = UnitTestGenerator.class.getDeclaredMethod(
+                "shouldSuppressIllegalArgumentAssertThrows",
+                sa.com.cloudsolutions.antikythera.evaluator.ExceptionContext.class,
+                Map.class);
+        suppress.setAccessible(true);
+
+        boolean result = (boolean) suppress.invoke(unitTestGenerator, ctx, currentArgs);
+
+        assertTrue(result);
+    }
+
+    @Test
+    void testSetupLoggersUsesDebugLevel() throws Exception {
+        Settings.setProperty(Settings.LOG_APPENDER, "com.example.LogAppender");
+        MethodDeclaration createMethod = classUnderTest.getMethodsByName("queries2").getFirst();
+        unitTestGenerator.createTests(createMethod, new MethodResponse());
+
+        Method setupLoggers = UnitTestGenerator.class.getDeclaredMethod("setupLoggers");
+        setupLoggers.setAccessible(true);
+        setupLoggers.invoke(unitTestGenerator);
+
+        assertTrue(unitTestGenerator.getCompilationUnit().toString().contains("appLogger.setLevel(Level.DEBUG);"));
+    }
+
+    @Test
+    void testAssertLoggedWithLevelNormalizesSlf4jTemplate() {
+        Expression assertion = UnitTestGenerator.assertLoggedWithLevel(
+                "com.example.Service",
+                "DEBUG",
+                "Episode saved  ----> {}");
+
+        assertTrue(assertion.toString().contains("\"Episode saved  ---->\""));
+        assertFalse(assertion.toString().contains("{}"));
+    }
 }
 
 class UnitTestGeneratorMoreTests extends TestHelper {
@@ -435,6 +870,56 @@ class UnitTestGeneratorMoreTests extends TestHelper {
     }
 
     @Test
+    void testProblemFeignClientUsesPlainMocksWhenListedInConfig() throws Exception {
+        Method method = UnitTestGenerator.class.getDeclaredMethod(
+                "applyMockAnnotationForDependencyType", FieldDeclaration.class, Type.class);
+        method.setAccessible(true);
+
+        ClassOrInterfaceDeclaration testSuite = new ClassOrInterfaceDeclaration().setName("SampleTest");
+        FieldDeclaration field = testSuite.addField("ProblemFeignClient", "problemFeignClient");
+
+        method.invoke(null, field, field.getElementType());
+
+        assertTrue(field.getAnnotationByName("Mock").isPresent());
+        assertFalse(field.toString().contains("RETURNS_DEEP_STUBS"));
+    }
+
+    @Test
+    void testClientTypesUseDeepStubsWhenPlainMockListUnset() throws Exception {
+        Method method = UnitTestGenerator.class.getDeclaredMethod(
+                "applyMockAnnotationForDependencyType", FieldDeclaration.class, Type.class);
+        method.setAccessible(true);
+
+        try {
+            Settings.loadConfigMap(new File("src/test/resources/generator-no-plain-mock-clients.yml"));
+            ClassOrInterfaceDeclaration testSuite = new ClassOrInterfaceDeclaration().setName("SampleTest");
+            FieldDeclaration field = testSuite.addField("ProblemFeignClient", "problemFeignClient");
+
+            method.invoke(null, field, field.getElementType());
+
+            assertTrue(field.getAnnotationByName("Mock").isPresent());
+            assertTrue(field.toString().contains("RETURNS_DEEP_STUBS"));
+        } finally {
+            Settings.loadConfigMap(new File("src/test/resources/generator-field-tests.yml"));
+        }
+    }
+
+    @Test
+    void testClientDependenciesUseDeepStubs() throws Exception {
+        Method method = UnitTestGenerator.class.getDeclaredMethod(
+                "applyMockAnnotationForDependencyType", FieldDeclaration.class, Type.class);
+        method.setAccessible(true);
+
+        ClassOrInterfaceDeclaration testSuite = new ClassOrInterfaceDeclaration().setName("SampleTest");
+        FieldDeclaration field = testSuite.addField("ErFeignClient", "erFeignClient");
+
+        method.invoke(null, field, field.getElementType());
+
+        assertTrue(field.getAnnotationByName("Mock").isPresent());
+        assertTrue(field.toString().contains("RETURNS_DEEP_STUBS"));
+    }
+
+    @Test
     void integrationTestFindAll() throws ReflectiveOperationException {
         LoggerContext loggerContext = (LoggerContext) LoggerFactory.getILoggerFactory();
         loggerContext.getLogger(Logger.ROOT_LOGGER_NAME).setLevel(Level.OFF);
@@ -467,7 +952,13 @@ class UnitTestGeneratorMoreTests extends TestHelper {
 
         Evaluator evaluator = EvaluatorFactory.create(FAKE_SERVICE, SpringEvaluator.class);
         evaluator.visit(md);
-        assertTrue(outContent.toString().contains("Person: class sa.com.cloudsolutions.antikythera.evaluator.MockingEvaluator"));
+        Variable persons = evaluator.getField("persons");
+        assertNotNull(persons);
+        assertInstanceOf(Collection.class, persons.getValue());
+        Collection<?> mockedPersons = (Collection<?>) persons.getValue();
+        assertFalse(mockedPersons.isEmpty());
+        assertInstanceOf(sa.com.cloudsolutions.antikythera.evaluator.MockingEvaluator.class,
+                mockedPersons.iterator().next());
         assertTrue(unitTestGenerator.gen.toString().contains("@Mock()\n" +
                 "    List<IPerson> persons;"));
     }
@@ -572,6 +1063,21 @@ class UnitTestGeneratorMoreTests extends TestHelper {
         unitTestGenerator.applyPreconditions();
         assertTrue(unitTestGenerator.testMethod.toString().contains("Shagrat"));
 
+    }
+
+    /**
+     * When a method parameter's type matches a non-@Mock protected field in the base test
+     * class, mockArgument should emit {@code Type paramName = this.fieldName;} rather than
+     * constructing a new instance.
+     */
+    @Test
+    void testMockArgumentUsesBaseClassField() {
+        MethodDeclaration md = setupMethod(CONDITIONAL, "conditional1");
+        unitTestGenerator.mockArguments();
+
+        String body = unitTestGenerator.testMethod.getBody().orElseThrow().toString();
+        assertTrue(body.contains("Person person = this.person"),
+                "Expected 'Person person = this.person' but was:\n" + body);
     }
 
     /**

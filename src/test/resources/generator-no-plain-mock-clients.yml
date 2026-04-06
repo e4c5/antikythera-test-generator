@@ -1,0 +1,22 @@
+# Same as generator.yml but omits plain_mock_dependency_simple_names so *Client types default to deep stubs.
+variables:
+  projects_folder: ..
+  m2_folder: ${HOME}/.m2/repository
+
+base_path: ${projects_folder}/antikythera-sample-project/src/main/java
+base_package: sa.com.cloudsolutions
+
+controllers: sa.com.cloudsolutions.controller
+output_path: /tmp/antikythera
+
+dependencies:
+  on_error: log
+
+database:
+  url: jdbc:oracle:thin:@//host:1521/service_name
+  user: C##xstrm
+  password: oracle_pwd
+  schema: your_schema
+  run_queries: false
+
+log_level: DEBUG

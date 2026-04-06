@@ -32,6 +32,7 @@ import com.github.javaparser.ast.type.VoidType;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import sa.com.cloudsolutions.antikythera.configuration.Settings;
 import sa.com.cloudsolutions.antikythera.parser.ImportWrapper;
 import sa.com.cloudsolutions.antikythera.parser.RestControllerParser;
 
@@ -79,7 +80,9 @@ public class SpringTestGenerator extends  TestGenerator {
         cu.getPackageDeclaration().ifPresent(gen::setPackageDeclaration);
 
         ClassOrInterfaceDeclaration cdecl =  gen.addClass(className);
-        cdecl.addExtendedType("TestHelper");
+        String baseClass = Settings.getProperty(Settings.BASE_TEST_CLASS, String.class)
+                .orElse("TestHelper");
+        cdecl.addExtendedType(baseClass);
     }
 
     /**

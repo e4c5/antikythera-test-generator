@@ -38,7 +38,6 @@ public class Antikythera {
 
     public static final String SRC = "src";
     private static final Logger logger = LoggerFactory.getLogger(Antikythera.class);
-    private static final String PACKAGE_PATH = "src/main/java/sa/com/cloudsolutions/antikythera";
     public static final String JAVA = ".java";
     private static Antikythera instance;
     private final Collection<String> controllers;
@@ -99,7 +98,13 @@ public class Antikythera {
     }
 
     public static void main(String[] args) throws IOException, XmlPullParserException, EvaluatorException {
+        if (args.length > 0 && !args[0].isBlank()) {
+            Settings.loadConfigMap(new File(args[0].trim()));
+        }
         Antikythera antk = Antikythera.getInstance();
+        if (isFallbackMode()) {
+            logger.info("No explicit controllers or services configured — using full-project fallback discovery for unit tests");
+        }
         antk.preProcess();
         antk.generateApiTests();
         Stats stats = RestControllerParser.getStats();
@@ -112,9 +117,11 @@ public class Antikythera {
     }
 
     private void copyBaseFiles(String outputPath) throws IOException, XmlPullParserException {
-        String testPath = PACKAGE_PATH.replace("main", "test");
-        mavenHelper.copyPom();
-        String name = mavenHelper.copyTemplate("TestHelper.txt", testPath, "base");
+        // outputPath is already the java source root (e.g. .../src/test/java), so the
+        // package path must be relative to it — not include "src/test/java" again.
+        String antikytheraPkgPath = "sa/com/cloudsolutions/antikythera";
+        mavenHelper.copyPom(Paths.get(deriveProjectRoot(outputPath)));
+        String name = CopyUtils.copyTemplate("TestHelper.txt", outputPath, antikytheraPkgPath, "base");
         if (name == null) {
             return;
         }
@@ -123,21 +130,22 @@ public class Antikythera {
         File f = new File(name);
         if (f.renameTo(new File(java))) {
 
-            mavenHelper.copyTemplate("Configurations.java", testPath, "configurations");
+            CopyUtils.copyTemplate("Configurations.java", outputPath, antikytheraPkgPath, "configurations");
 
-            Path pathToCopy = Paths.get(outputPath, SRC, "test", "resources");
+            // Resources live one level above the java source root (src/test/resources)
+            Path pathToCopy = Paths.get(outputPath).getParent().resolve("resources");
             Files.createDirectories(pathToCopy);
             copyFolder(Paths.get(SRC, "test", "resources"), pathToCopy);
 
-            pathToCopy = Paths.get(outputPath, PACKAGE_PATH, "constants");
+            pathToCopy = Paths.get(outputPath, antikytheraPkgPath, "constants");
             Files.createDirectories(pathToCopy);
             /*
              * Todo resurrect the Constants class that as in the
              * com.sa.com.cloudsolutions.antikythera.constants package
              * and move it to the resources
-             * copyFolder(Paths.get(PACKAGE_PATH, "constants"), pathToCopy);
+             * copyFolder(Paths.get(antikytheraPkgPath, "constants"), pathToCopy);
              */
-            pathToCopy = Paths.get(outputPath, PACKAGE_PATH, "configurations");
+            pathToCopy = Paths.get(outputPath, antikytheraPkgPath, "configurations");
             Files.createDirectories(pathToCopy);
         } else {
             throw new AntikytheraException("Could not copy resources");
@@ -185,16 +193,54 @@ public class Antikythera {
     public void preProcess() throws IOException, XmlPullParserException {
         mavenHelper = new MavenHelper();
         mavenHelper.readPomFile();
-        if (!controllers.isEmpty() || !services.isEmpty()) {
-            CopyUtils.createMavenProjectStructure(Settings.getBasePackage(), Settings.getOutputPath());
+        if (!controllers.isEmpty()) {
+            // API tests are written into a standalone Maven project rooted at deriveProjectRoot().
+            CopyUtils.createMavenProjectStructure(Settings.getBasePackage(), deriveProjectRoot(Settings.getOutputPath()));
             copyBaseFiles(Settings.getOutputPath());
         }
 
         AbstractCompiler.preProcess();
+    }
 
+    /**
+     * Derives the standalone project root from the configured output path.
+     *
+     * <p>By convention {@code output_path} points to the {@code src/test/java} directory of the
+     * generated project (e.g. {@code /foo/bar/src/test/java}).  Stripping those three trailing
+     * components yields the project root ({@code /foo/bar}), which is where the Maven project
+     * structure and the generated {@code pom.xml} should live.</p>
+     *
+     * @param outputPath the value of {@code output_path} from the generator configuration
+     * @return the project root path
+     */
+    static String deriveProjectRoot(String outputPath) {
+        return Paths.get(outputPath).getParent().getParent().getParent().toString();
+    }
+
+    /**
+     * True when both {@code controllers} and {@code services} are absent or empty in {@code generator.yml},
+     * enabling full-project unit-test discovery via {@link UnitTestDiscovery#discoverFallbackUnitTargets()}.
+     */
+    public static boolean isFallbackMode() {
+        Collection<String> c = Settings.getPropertyList(Settings.CONTROLLERS, String.class);
+        Collection<String> s = Settings.getPropertyList(Settings.SERVICES, String.class);
+        return c.isEmpty() && s.isEmpty();
     }
 
     private void generateUnitTests() throws IOException {
+        if (isFallbackMode()) {
+            List<String> targets = UnitTestDiscovery.discoverFallbackUnitTargets();
+            logger.info("Fallback mode: processing {} discovered unit target(s)", targets.size());
+            for (String path : targets) {
+                try {
+                    processService(path, new String[] { path });
+                } catch (Throwable t) {
+                    logger.warn("Fallback: skipped unit target {} — {}", path, t.toString());
+                    logger.debug("Fallback skip stack trace for {}", path, t);
+                }
+            }
+            return;
+        }
         for (String service : services) {
             String[] parts = service.split("#");
             String path = parts[0];
